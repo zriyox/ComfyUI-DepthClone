@@ -1,0 +1,13 @@
+[project]
+name = "comfyui-depthclone"
+version = "1.0.0"
+description = "深度复刻预处理 ComfyUI 节点：Depth Anything V2 深度推理 + 归一化、前景深度合成"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["comfyui", "depth", "depth-anything-v2", "video"]
+
+[project.urls]
+Repository = "https://github.com/zriyox/ComfyUI-DepthClone"
+
+[tool.comfy]
+DisplayName = "深度复刻 DepthClone"
