@@ -21,7 +21,7 @@ RTX 5070 Ti、720×1280、160 帧（5 秒）实测：
 
 | 节点 | 输入 | 输出 | 说明 |
 |---|---|---|---|
-| 深度推理+归一化(深度复刻) `DepthCloneDepth` | `da_v2_model`（DAMODEL）、`images`（IMAGE）、`precision`（fp16 / fp32，默认 fp16） | 深度（IMAGE，近亮远暗） | Depth Anything V2 推理（短边 518），逐帧取 1% / 99% 分位、按 0.9 / 0.1 滑动平均归一化，输出长边不超过 960 |
+| 深度推理+归一化(深度复刻) `DepthCloneDepth` | `da_v2_model`（DAMODEL）、`images`（IMAGE）、`precision`（fp16 / fp32，默认 fp16）、`mode`（DETAIL / MOTION，默认 DETAIL） | 深度（IMAGE，近亮远暗） | Depth Anything V2 推理（短边 518），逐帧取 1% / 99% 分位、按 0.9 / 0.1 滑动平均归一化，输出长边不超过 960；MOTION 把深度缩到长边 120、平滑两次并压成 16 层后恢复尺寸，抹去商品等小物体轮廓 |
 | 人体分割(深度复刻) `DepthClonePersonMask` | `images`（IMAGE） | 人体分割（IMAGE，黑=人、白=背景） | segformer_b2_clothes，推理尺寸 512×512，非背景类别都算人；可直接替换 `segformer_b2_clothes` 节点（13 个类别全开时输出相同含义） |
 | 前景深度合成(深度复刻) `DepthCloneForeground` | `depth`（IMAGE）、`person_mask`（IMAGE，黑=人、白=背景）、`percentile`（FLOAT，外接输入，默认 0.15） | 前景深度（IMAGE） | 人物掩码膨胀；取人物区域内深度的第 `percentile` 分位作阈值；保留「人物 ∪ 深度 ≥ 阈值」，高斯羽化后乘到深度上；人物占画面不到 1% 时输出完整深度。`percentile` 越小保留越多 |
 
@@ -39,6 +39,8 @@ RTX 5070 Ti、720×1280、160 帧（5 秒）实测：
 加载视频(VHS_LoadVideo) ──IMAGE──┐
 深度模型(DownloadAndLoadDepthAnythingV2Model) ──DAMODEL──┴─> 深度推理+归一化 ──> 合并为视频(VHS_VideoCombine)
 ```
+
+`DETAIL` 与旧版本行为一致，适合人物、服装等需要保留轮廓细节的任务。`MOTION` 适合商品替换：保留手势、人物姿态、站位、运镜和镜头切换，同时减少参考视频中原商品轮廓回流到生成结果。
 
 前景深度：
 

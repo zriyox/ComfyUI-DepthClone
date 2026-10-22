@@ -21,13 +21,37 @@ BATCH = 8
 SEG_MODEL_DIR = "segformer_b2_clothes"
 SEG_REPO_ID = "mattmdjaga/segformer_b2_clothes"
 SEG_SIZE = 512
+MOTION_LONG_SIDE = 120
+MOTION_DEPTH_LEVELS = 16
+MOTION_BLUR_PASSES = 2
 
 
 def _device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def depth_normalize(da_model, images, precision="fp16"):
+def motion_depth(depth, mode="DETAIL"):
+    """DETAIL 原样返回；MOTION 抹去小物体轮廓，只保留大尺度动作、站位、运镜与构图深度。"""
+    normalized_mode = str(mode or "DETAIL").upper()
+    if normalized_mode == "DETAIL":
+        return depth
+    if normalized_mode != "MOTION":
+        raise ValueError(f"不支持的深度模式: {mode}")
+    if depth.dim() != 4 or depth.shape[-1] not in (1, 3, 4):
+        raise ValueError("depth 必须是 [B,H,W,C] IMAGE tensor")
+    height, width = depth.shape[1:3]
+    scale = MOTION_LONG_SIDE / max(height, width)
+    low_height = max(8, round(height * scale))
+    low_width = max(8, round(width * scale))
+    low = F.interpolate(depth.permute(0, 3, 1, 2), size=(low_height, low_width), mode="area")
+    for _ in range(MOTION_BLUR_PASSES):
+        low = F.avg_pool2d(F.pad(low, (2, 2, 2, 2), mode="reflect"), kernel_size=5, stride=1)
+    low = torch.round(low * (MOTION_DEPTH_LEVELS - 1)) / (MOTION_DEPTH_LEVELS - 1)
+    restored = F.interpolate(low, size=(height, width), mode="bilinear", align_corners=False)
+    return restored.permute(0, 2, 3, 1).clamp(0, 1)
+
+
+def depth_normalize(da_model, images, precision="fp16", mode="DETAIL"):
     """images: [B,H,W,3] 0~1；返回 [B,oh,ow,3] 深度（近亮远暗），1%/99% 分位 + 0.9/0.1 滑动平均归一化。
 
     precision="fp16"：模型推理走 fp16 混合精度（本地脚本同样用 fp16 推理），5070 Ti 实测比 fp32 快约 3.3 倍，
@@ -59,6 +83,7 @@ def depth_normalize(da_model, images, precision="fp16"):
             if d.dim() == 4:
                 d = d[:, 0]
             d = F.interpolate(d[:, None], size=(oh, ow), mode="bicubic", align_corners=False)[:, 0]
+            normalized_frames = []
             for f in d:
                 flat = f.flatten()
                 a = float(torch.quantile(flat, 0.01))
@@ -67,8 +92,10 @@ def depth_normalize(da_model, images, precision="fp16"):
                     lo, hi = a, b
                 else:
                     lo, hi = lo * 0.9 + a * 0.1, hi * 0.9 + b * 0.1
-                res.append(((f - lo) / max(1e-6, hi - lo)).clamp(0, 1).cpu())
-    return torch.stack(res)[..., None].repeat(1, 1, 1, 3)
+                normalized_frames.append(((f - lo) / max(1e-6, hi - lo)).clamp(0, 1))
+            normalized = torch.stack(normalized_frames)[..., None].repeat(1, 1, 1, 3)
+            res.append(motion_depth(normalized, mode).cpu())
+    return torch.cat(res)
 
 
 _seg_model = None
@@ -152,17 +179,20 @@ class DepthCloneDepth:
                 "da_v2_model": ("DAMODEL",),
                 "images": ("IMAGE",),
                 "precision": (["fp16", "fp32"], {"default": "fp16", "tooltip": "fp16 混合精度约 3 倍速度、深度差可忽略；fp32 与本地脚本逐值一致"}),
-            }
+            },
+            "optional": {
+                "mode": (["DETAIL", "MOTION"], {"default": "DETAIL", "tooltip": "DETAIL 保留完整深度细节；MOTION 抹去商品等小物体轮廓，只保留动作与构图"}),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("深度",)
     FUNCTION = "run"
     CATEGORY = "深度复刻"
-    DESCRIPTION = "Depth Anything V2 推理 + 1%/99% 分位滑动平均归一化（近亮远暗），与千谲本地 depth_gpu.py 同算法；默认 fp16 混合精度推理。"
+    DESCRIPTION = "Depth Anything V2 推理 + 1%/99% 分位滑动平均归一化（近亮远暗）；DETAIL 保留完整细节，MOTION 抹去小物体轮廓并保留动作与构图。"
 
-    def run(self, da_v2_model, images, precision="fp16"):
-        return (depth_normalize(da_v2_model, images, precision),)
+    def run(self, da_v2_model, images, precision="fp16", mode="DETAIL"):
+        return (depth_normalize(da_v2_model, images, precision, mode),)
 
 
 class DepthClonePersonMask:
